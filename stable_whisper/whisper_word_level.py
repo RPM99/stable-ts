@@ -576,6 +576,7 @@ def transcribe_stable(
                         .mean()
                     )
                     if zero_duration_percent > max_instant_words:
+                        zero_duration_percent_led_to_remove = True
                         del current_segments[i]
 
                 if avg_prob_threshold and current_segments:
@@ -590,6 +591,8 @@ def transcribe_stable(
                         num_samples = round((current_segments[-1]['words'][-1]['end']-time_offset) * SAMPLE_RATE)
 
             if len(current_segments) == 0:
+                if zero_duration_percent_led_to_remove:
+                    segment_samples = min(num_samples, int(SAMPLE_RATE * 0.1))
                 fast_forward()
                 continue
 
