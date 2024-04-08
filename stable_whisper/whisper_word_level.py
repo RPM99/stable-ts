@@ -550,6 +550,7 @@ def transcribe_stable(
                 segment_samples
             )
 
+            zero_duration_percent_led_to_remove = False
             if word_timestamps:
                 add_word_timestamps_stable(
                     segments=current_segments,
