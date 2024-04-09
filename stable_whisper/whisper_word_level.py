@@ -427,6 +427,9 @@ def transcribe_stable(
             update_seek()
             update_pbar()
 
+        # variable to store the amount of samples that have been skipped due to unreasonable amount of instantaneous words
+        hop_segment_samples = 0 
+        estimate_times_differently = False
         while seek_sample < audio.shape[-1]:
             seek_sample_end = seek_sample + N_SAMPLES
             audio_segment = audio[seek_sample:seek_sample_end]
@@ -550,6 +553,11 @@ def transcribe_stable(
                 segment_samples
             )
 
+            if estimate_times_differently and len(current_segments) != 0:
+                current_segments[-1].end = round(time_offset + duration, 3)
+                estimate_times_differently = False
+                # reset the number of samples that have been skipped
+                hop_segment_samples = 0
             zero_duration_percent_led_to_remove = False
             if word_timestamps:
                 add_word_timestamps_stable(
@@ -593,7 +601,13 @@ def transcribe_stable(
 
             if len(current_segments) == 0:
                 if zero_duration_percent_led_to_remove:
+                    segment_samples_ = segment_samples
                     segment_samples = min(num_samples, int(SAMPLE_RATE * 0.1))
+                    hop_segment_samples += segment_samples
+                    if hop_segment_samples >= segment_samples_ * 3 // 4:
+                        seek_sample -= hop_segment_samples
+                        segment_samples = 0
+                        estimate_times_differently = True
                 fast_forward()
                 continue
 
