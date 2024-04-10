@@ -554,7 +554,7 @@ def transcribe_stable(
             )
 
             if estimate_times_differently and len(current_segments) != 0:
-                current_segments[-1].end = round(time_offset + duration, 3)
+                current_segments[-1]["end"] = round(time_offset + duration, 3)
                 estimate_times_differently = False
                 # reset the number of samples that have been skipped
                 hop_segment_samples = 0
