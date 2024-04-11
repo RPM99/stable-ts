@@ -44,6 +44,7 @@ class WordTiming:
     right_locked: bool = False
     segment_id: Optional[int] = None
     id: Optional[int] = None
+    debug: Optional[str] = None
 
     def __len__(self):
         return len(self.word)

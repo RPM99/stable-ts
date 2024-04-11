@@ -427,9 +427,8 @@ def transcribe_stable(
             update_seek()
             update_pbar()
 
-        # variable to store the amount of samples that have been skipped due to unreasonable amount of instantaneous words
-        hop_segment_samples = 0 
-        estimate_times_differently = False
+        # fallback flag for when segments are discarded due to high percentage of instantaneous words
+        word_timestamps_fallback = False
         while seek_sample < audio.shape[-1]:
             seek_sample_end = seek_sample + N_SAMPLES
             audio_segment = audio[seek_sample:seek_sample_end]
@@ -523,6 +522,7 @@ def transcribe_stable(
                 if (
                         len(timestamps) > 0
                         and timestamps[-1].item() != tokenizer.timestamp_begin
+                        and not word_timestamps_fallback
                 ):
                     # no consecutive timestamps but it has a timestamp; use the last one.
                     end_timestamp_pos = (
@@ -553,11 +553,7 @@ def transcribe_stable(
                 segment_samples
             )
 
-            if estimate_times_differently and len(current_segments) != 0:
-                current_segments[-1]["end"] = round(time_offset + duration, 3)
-                estimate_times_differently = False
-                # reset the number of samples that have been skipped
-                hop_segment_samples = 0
+            # flag for whether segments with high percentage of instantaneous words were removed
             zero_duration_percent_led_to_remove = False
             if word_timestamps:
                 add_word_timestamps_stable(
@@ -586,7 +582,9 @@ def transcribe_stable(
                     )
                     if zero_duration_percent > max_instant_words:
                         zero_duration_percent_led_to_remove = True
-                        del current_segments[i]
+                        if not word_timestamps_fallback:
+                            # delete segments only if not already in fallback
+                            del current_segments[i]
 
                 if avg_prob_threshold and current_segments:
                     if (
@@ -600,14 +598,12 @@ def transcribe_stable(
                         num_samples = round((current_segments[-1]['words'][-1]['end']-time_offset) * SAMPLE_RATE)
 
             if len(current_segments) == 0:
+                # case too many words were instantaneous on some segment
                 if zero_duration_percent_led_to_remove:
-                    segment_samples_ = segment_samples
-                    segment_samples = min(num_samples, int(SAMPLE_RATE * 0.1))
-                    hop_segment_samples += segment_samples
-                    if hop_segment_samples >= segment_samples_ * 3 // 4:
-                        seek_sample -= hop_segment_samples
-                        segment_samples = 0
-                        estimate_times_differently = True
+                    # first option for fallback
+                    if not word_timestamps_fallback:
+                        word_timestamps_fallback = True
+                        segment_samples = 0   
                 fast_forward()
                 continue
 
@@ -621,6 +617,20 @@ def transcribe_stable(
                     if verbose:
                         safe_print(segment.to_display_str())
                     current_segments[seg_i] = segment.to_dict()
+
+            if zero_duration_percent_led_to_remove and word_timestamps_fallback:
+                # case already on fallback but still failed
+                # give up on this segment, because it is surely corrupted with hallucinations
+                # and will corrupt the following segments
+                word_timestamps_fallback = False
+                fast_forward()
+                continue
+            elif word_timestamps_fallback:
+                # case first option of fallback worked
+                for segment_idx in range(len(current_segments)):
+                    for word_idx in range(len(current_segments[segment_idx]['words'])):
+                        current_segments[segment_idx]['words'][word_idx].update([('debug', 'Fallback-1')])
+            word_timestamps_fallback = False 
 
             all_segments.extend(
                 [
