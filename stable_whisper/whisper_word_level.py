@@ -407,6 +407,9 @@ def transcribe_stable(
     if suppress_silence and vad:
         silence_timing = get_vad_silence_func(onnx=vad_onnx, verbose=verbose)(audio, speech_threshold=vad_threshold)
 
+    # container to store segments of no silence where Whisper hallucinated
+    failures = []
+
     with tqdm(total=total_duration, unit='sec', disable=verbose is not False, desc=task.title()) as tqdm_pbar:
 
         def update_pbar():
@@ -622,6 +625,11 @@ def transcribe_stable(
                 # case already on fallback but still failed
                 # give up on this segment, because it is surely corrupted with hallucinations
                 # and will corrupt the following segments
+                # store the interval where this happened
+                failures.append({
+                    'start': current_segments[0]['start'],
+                    'end': current_segments[0]['start'] + segment_samples // SAMPLE_RATE
+                })
                 word_timestamps_fallback = False
                 fast_forward()
                 continue
@@ -660,7 +668,8 @@ def transcribe_stable(
     final_result = WhisperResult(dict(text=text,
                                       segments=all_segments,
                                       language=language,
-                                      time_scale=time_scale))
+                                      time_scale=time_scale),
+                                failures=failures)
     if word_timestamps and regroup:
         final_result.regroup(regroup)
 

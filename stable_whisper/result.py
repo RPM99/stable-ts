@@ -619,9 +619,11 @@ class WhisperResult:
             self,
             result: Union[str, dict, list],
             force_order: bool = False,
-            check_sorted: Union[bool, str] = True
+            check_sorted: Union[bool, str] = True,
+            failures: Optional[list] = None
     ):
         result, self.path = self._standardize_result(result)
+        self.failures = failures
         self.ori_dict = result.get('ori_dict') or result
         self.language = self.ori_dict.get('language')
         self._regroup_history = result.get('regroup_history', '')
@@ -968,7 +970,8 @@ class WhisperResult:
                     segments=self.segments_to_dicts(),
                     language=self.language,
                     ori_dict=self.ori_dict,
-                    regroup_history=self._regroup_history)
+                    regroup_history=self._regroup_history,
+                    failures=self.failures)
 
     def segments_to_dicts(self, reverse_text: Union[bool, tuple] = False):
         return [s.to_dict(reverse_text=reverse_text) for s in self.segments]
