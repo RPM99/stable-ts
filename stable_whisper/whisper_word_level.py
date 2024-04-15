@@ -478,9 +478,13 @@ def transcribe_stable(
                 # which still remains clouded by some mystery
                 result: DecodingResult = decode_with_fallback(mel_segment, ts_token_mask=ts_token_mask)
             except Exception as e:
-                # print the error, reset some flags and skip segment
+                # print the error, reset the fallback flag, add this segment as failure and skip segment
                 print(e)
                 word_timestamps_fallback = False
+                failures.append({
+                    'start': time_offset,
+                    'end': time_offset + segment_duration
+                })
                 fast_forward()
                 continue
 
