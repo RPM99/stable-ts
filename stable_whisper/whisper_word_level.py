@@ -473,7 +473,17 @@ def transcribe_stable(
 
             detect_language()
             decode_options["prompt"] = all_tokens[prompt_reset_since:]
-            result: DecodingResult = decode_with_fallback(mel_segment, ts_token_mask=ts_token_mask)
+            try:
+                # this try-except serves to catch some torch/cuda exceptions from the OpenAI's Whisper library
+                # which still remains clouded by some mystery
+                result: DecodingResult = decode_with_fallback(mel_segment, ts_token_mask=ts_token_mask)
+            except Exception as e:
+                # print the error, reset some flags and skip segment
+                print(e)
+                word_timestamps_fallback = False
+                fast_forward()
+                continue
+
             tokens = torch.tensor(result.tokens)
 
             if no_speech_threshold is not None:
