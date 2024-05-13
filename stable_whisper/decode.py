@@ -22,7 +22,53 @@ class DecodingTaskStable(DecodingTask):
     def __init__(self, *args, **kwargs):
         self.ts_token_mask: torch.Tensor = kwargs.pop('ts_token_mask', None)
         self.audio_features: torch.Tensor = kwargs.pop('audio_features', None)
+        self.keyword_spotting: Optional[Callable] = kwargs.pop('keyword_spotting', None)
+        self.input_segment: Optional[Callable] = kwargs.pop('input_segment', None)
         super(DecodingTaskStable, self).__init__(*args, **kwargs)
+
+    def _get_initial_tokens(self) -> Tuple[int]:
+        tokens = list(self.sot_sequence)
+
+        if prefix := self.options.prefix:
+            prefix_tokens = (
+                self.tokenizer.encode(" " + prefix.strip())
+                if isinstance(prefix, str)
+                else prefix
+            )
+            if self.sample_len is not None:
+                max_prefix_len = self.n_ctx // 2 - self.sample_len
+                prefix_tokens = prefix_tokens[-max_prefix_len:]
+            if len(prefix_tokens) != 0:
+                warnings.warn("DecodingTaskStablePBA: a prefix was provided but was ignored")
+                prefix_tokens = []
+            tokens = tokens + prefix_tokens
+
+        if (keyword_spotting := self.keyword_spotting) != None and (segment_input := self.input_segment) != None:
+            # obtain tokens corresponding to identified keywords
+            biasing_prompt = keyword_spotting(input_features=segment_input)[0]
+            keywords_tokens = self.tokenizer.encode(" " + biasing_prompt.strip()) if biasing_prompt.strip() != '' else []
+            keywords_tokens = keywords_tokens[-min(len(keywords_tokens), (self.n_ctx // 2 - 1) * 3 // 4):].tolist() if not isinstance(keywords_tokens, list) else keywords_tokens
+        else:
+            keywords_tokens = []
+
+        if prompt := self.options.prompt:
+            prompt_tokens = (
+                self.tokenizer.encode(" " + prompt.strip())
+                if isinstance(prompt, str)
+                else prompt
+            )
+        else:
+            prompt_tokens = []
+
+        if len(keywords_tokens) != 0 or len(prompt_tokens) != 0:
+            tokens = (
+                [self.tokenizer.sot_prev]
+                + keywords_tokens
+                + prompt_tokens[-((self.n_ctx // 2 - 1) - len(keywords_tokens)) :]
+                + tokens
+            )
+
+        return tuple(tokens)
 
     def _get_audio_features(self, mel: torch.Tensor):
         if self.audio_features is None:
@@ -74,6 +120,7 @@ def decode_stable(model: "Whisper",
                   options: DecodingOptions = DecodingOptions(),
                   ts_token_mask: torch.Tensor = None,
                   audio_features: torch.Tensor = None,
+                  keyword_spotting: Optional[Callable] = None,
                   **kwargs, ) -> \
         Union[DecodingResult, List[DecodingResult], tuple]:
     """
@@ -91,6 +138,9 @@ def decode_stable(model: "Whisper",
         Mask for suppressing to timestamp token(s) for decoding.
     audio_features : torch.Tensor, optional
         Reused ``audio_feature`` from encoder for fallback.
+    keyword_spotting : Callable, optional
+        A callable function that returns a biasing prompt with the keywords present in a given 
+        segment of audio.
 
     Returns
     -------
@@ -103,7 +153,7 @@ def decode_stable(model: "Whisper",
     if kwargs:
         options = replace(options, **kwargs)
 
-    task = DecodingTaskStable(model, options, ts_token_mask=ts_token_mask, audio_features=audio_features)
+    task = DecodingTaskStable(model, options, ts_token_mask=ts_token_mask, audio_features=audio_features, keyword_spotting=keyword_spotting, input_segment=mel)
     result = task.run(mel)
 
     return result[0] if single else result, task.audio_features

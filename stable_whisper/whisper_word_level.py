@@ -71,6 +71,7 @@ def transcribe_stable(
         avg_prob_threshold: Optional[float] = None,
         progress_callback: Callable = None,
         ignore_compatibility: bool = False,
+        keyword_spotting: Optional[Callable] = None,
         **decode_options) \
         -> WhisperResult:
     """
@@ -190,6 +191,9 @@ def transcribe_stable(
         The second parameter is a float for total duration of audio in seconds.
     ignore_compatibility : bool, default False
         Whether to ignore warnings for compatibility issues with the detected Whisper version.
+    keyword_spotting : Callable, optional
+        A callable function that returns a biasing prompt with the keywords present in a given 
+        segment of audio.
     decode_options
         Keyword arguments to construct class:`whisper.decode.DecodingOptions` instances.
 
@@ -345,7 +349,8 @@ def transcribe_stable(
                                                           seg,
                                                           options,
                                                           ts_token_mask=ts_token_mask if suppress_ts_tokens else None,
-                                                          audio_features=audio_features)
+                                                          audio_features=audio_features,
+                                                          keyword_spotting=keyword_spotting)
 
             needs_fallback = False
             if (
