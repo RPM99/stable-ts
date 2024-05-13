@@ -121,6 +121,7 @@ def decode_stable(model: "Whisper",
                   options: DecodingOptions = DecodingOptions(),
                   ts_token_mask: torch.Tensor = None,
                   audio_features: torch.Tensor = None,
+                  waveform: Optional[torch.Tensor] = None,
                   keyword_spotting: Optional[Callable] = None,
                   **kwargs, ) -> \
         Union[DecodingResult, List[DecodingResult], tuple]:
@@ -139,6 +140,8 @@ def decode_stable(model: "Whisper",
         Mask for suppressing to timestamp token(s) for decoding.
     audio_features : torch.Tensor, optional
         Reused ``audio_feature`` from encoder for fallback.
+    waveform: torch.Tensor, optional
+        The waveform segment for keyword spotting.
     keyword_spotting : Callable, optional
         A callable function that returns a biasing prompt with the keywords present in a given 
         segment of audio.
@@ -154,7 +157,7 @@ def decode_stable(model: "Whisper",
     if kwargs:
         options = replace(options, **kwargs)
 
-    task = DecodingTaskStable(model, options, ts_token_mask=ts_token_mask, audio_features=audio_features, keyword_spotting=keyword_spotting, input_segment=mel)
+    task = DecodingTaskStable(model, options, ts_token_mask=ts_token_mask, audio_features=audio_features, keyword_spotting=keyword_spotting, input_segment=waveform)
     result = task.run(mel)
 
     return result[0] if single else result, task.audio_features
