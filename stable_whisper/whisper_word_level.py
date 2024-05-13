@@ -347,10 +347,10 @@ def transcribe_stable(
             options = DecodingOptions(**kwargs, temperature=t)
             decode_result, audio_features = decode_stable(model,
                                                           seg,
-                                                          audio_segment,
                                                           options,
                                                           ts_token_mask=ts_token_mask if suppress_ts_tokens else None,
                                                           audio_features=audio_features,
+                                                          waveform=audio_segment,
                                                           keyword_spotting=keyword_spotting)
 
             needs_fallback = False
