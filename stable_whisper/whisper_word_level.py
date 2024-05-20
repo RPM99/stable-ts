@@ -71,6 +71,8 @@ def transcribe_stable(
         avg_prob_threshold: Optional[float] = None,
         progress_callback: Callable = None,
         ignore_compatibility: bool = False,
+        biasing_phrases: Optional[List[str]] = None,
+        kmp_bonus: float = 1.0,
         **decode_options) \
         -> WhisperResult:
     """
@@ -192,7 +194,10 @@ def transcribe_stable(
         Whether to ignore warnings for compatibility issues with the detected Whisper version.
     decode_options
         Keyword arguments to construct class:`whisper.decode.DecodingOptions` instances.
-
+    biasing_phrases: List[str]
+        List of hotwords present in the audio that should condition the transcription.
+    kmp_bonus: float
+        Hyperparameter that weighs the impact of the biasing phrases in the decoding process.
     Returns
     -------
     stable_whisper.result.WhisperResult
@@ -345,7 +350,9 @@ def transcribe_stable(
                                                           seg,
                                                           options,
                                                           ts_token_mask=ts_token_mask if suppress_ts_tokens else None,
-                                                          audio_features=audio_features)
+                                                          audio_features=audio_features,
+                                                          biasing_phrases=biasing_phrases,
+                                                          kmp_bonus=kmp_bonus)
 
             needs_fallback = False
             if (
