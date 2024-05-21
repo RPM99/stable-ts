@@ -272,6 +272,7 @@ def transcribe_stable(
 
     def detect_language():
         nonlocal tokenizer
+        nonlocal biasing_phrases
         if tokenizer is None:
             if decode_options.get("language", None) is None and model:
                 if not model.is_multilingual:
@@ -325,6 +326,8 @@ def transcribe_stable(
                 nonlocal initial_prompt_tokens
                 initial_prompt_tokens = tokenizer.encode(" " + initial_prompt.strip())
                 all_tokens.extend(initial_prompt_tokens)
+                
+        biasing_phrases = [tokenizer.encode(bp) for bp in biasing_phrases] if (len(biasing_phrases) != 0 and isinstance(biasing_phrases[0], str)) else (biasing_phrases if (len(biasing_phrases) != 0 and isinstance(biasing_phrases[0], list)) else None)
 
     audio_features = None
 

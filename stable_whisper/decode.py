@@ -117,7 +117,7 @@ class BeamSearchDecoderModified(BeamSearchDecoder):
             self.finished_sequences = [{} for _ in range(n_audio)]
 
         logprobs = F.log_softmax(logits.float(), dim=-1)
-        next_tokens, source_indices, next_partial_matching_lengths, finished_sequences = [], [], []
+        next_tokens, source_indices, next_partial_matching_lengths, finished_sequences = [], [], [], []
         for i in range(n_audio):
             scores, sources, pmls, bonuses, finished = {}, {}, {}, {}, {}
 
@@ -190,7 +190,7 @@ class DecodingTaskStable(DecodingTask):
         super(DecodingTaskStable, self).__init__(*args, **kwargs)
         if self.options.beam_size != None:
             self.decoder = BeamSearchDecoderModified(
-                beam_size = self.options.beam_size, eot = self.tokenizer.eot, inference = self.inference, patience = self.options.patience, biasing_phrases = self.biasing_phares, kmp_bonus = self.kmp_bonus
+                beam_size = self.options.beam_size, eot = self.tokenizer.eot, inference = self.inference, patience = self.options.patience, biasing_phrases = self.biasing_phrases, kmp_bonus = self.kmp_bonus
             )
 
     def _get_audio_features(self, mel: torch.Tensor):
@@ -227,7 +227,10 @@ class DecodingTaskStable(DecodingTask):
 
                 logits.nan_to_num_(-np.inf)
                 # expand the tokens tensor with the selected next tokens
-                tokens, completed, partial_matching_lengths = self.decoder.update(tokens, logits, sum_logprobs, partial_matching_lengths)
+                if self.options.beam_size != None:
+                    tokens, completed, partial_matching_lengths = self.decoder.update(tokens, logits, sum_logprobs, partial_matching_lengths)
+                else:
+                    tokens, completed = self.decoder.update(tokens, logits, sum_logprobs)
 
                 if completed or tokens.shape[-1] > self.n_ctx:
                     break
