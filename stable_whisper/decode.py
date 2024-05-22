@@ -15,32 +15,13 @@ from typing import Tuple, Optional, Iterable
 import torch.nn.functional as F
 
 
-def failure(
-    sequence: List[int]
-) -> List[int]:
-    
-    result = [-1] * len(sequence)
-    
-    k = 0
-    for i in range(1, len(sequence)):
-        if sequence[i] == sequence[k]:
-            result[i] = result[k]
-        else:
-            result[i] = k
-            while k >= 0 and sequence[i] != sequence[k]:
-                k = result[k]
-        k += 1
-        
-    return result
-
-
 def forward(
     sequence: List[int],
+    f_sequence: List[int],
     i: int,
     x: int
 ) -> Tuple[int, bool]:
-    
-    f_sequence = failure(sequence)    
+     
     full_match = False
     
     if sequence[i] == x:
@@ -64,7 +45,7 @@ def potential(
     
     
 def ComputeBonus(
-    biasing_phrases: List[List[int]],
+    biasing_phrases: List[Tuple[List[int], List[int]]],
     partial_matching_lengths: Tensor,
     x: Tensor ,
     delta: float = 1.0
@@ -75,10 +56,10 @@ def ComputeBonus(
     new_partial_matching_lengths = [0] * n_biasing_phrases
     
     for b in range(n_biasing_phrases):
-        u, match = forward(biasing_phrases[b], partial_matching_lengths[b].item(), x.item())
+        u, match = forward(biasing_phrases[b][0], biasing_phrases[b][1], partial_matching_lengths[b].item(), x.item())
         if match:
             any_match = True
-            new_partial_matching_lengths[b] = len(biasing_phrases[b])
+            new_partial_matching_lengths[b] = len(biasing_phrases[b][0])
         else:
             new_partial_matching_lengths[b] = u
     
@@ -92,18 +73,12 @@ def ComputeBonus(
     
 class BeamSearchDecoderModified(BeamSearchDecoder):
     
-    def __init__(self, *args, **kwargs):
-        if kwargs.get("biasing_phrases", None) != None:
-            self.kmp = True
-            self.biasing_phrases = kwargs.pop("biasing_phrases")
-        else:
-            self.kmp = False
-        if kwargs.get("kmp_bonus", None) != None:
-            if self.kmp:
-                self.kmp_bonus = kwargs.pop("kmp_bonus")
-        elif self.kmp:
-            self.kmp_bonus = 1.0
-        super(BeamSearchDecoderModified, self).__init__(*args, **kwargs)
+    def __init__(self, *args, **kwargs):        
+        self.biasing_phrases = kwargs.pop("biasing_phrases")
+        self.kmp = (self.biasing_phrases != None)
+        self.kmp_bonus = kwargs.pop("kmp_bonus")
+        self.kmp_bonus = self.kmp_bonus if self.kmp_bonus != None else 1.0
+        super(BeamSearchDecoderModified, self).__init__(*args, **kwargs)    
         
     
     def update(
@@ -185,10 +160,10 @@ class DecodingTaskStable(DecodingTask):
     def __init__(self, *args, **kwargs):
         self.ts_token_mask: torch.Tensor = kwargs.pop('ts_token_mask', None)
         self.audio_features: torch.Tensor = kwargs.pop('audio_features', None)
-        self.biasing_phrases: List[List[int]] = kwargs.pop('biasing_phrases', None)
+        self.biasing_phrases: Optional[List[Tuple[List[int], List[int]]]] = kwargs.pop('biasing_phrases', None)
         self.kmp_bonus: float = kwargs.pop('kmp_bonus', None)
         super(DecodingTaskStable, self).__init__(*args, **kwargs)
-        if self.options.beam_size != None:
+        if self.options.beam_size != None and self.biasing_phrases != None:
             self.decoder = BeamSearchDecoderModified(
                 beam_size = self.options.beam_size, eot = self.tokenizer.eot, inference = self.inference, patience = self.options.patience, biasing_phrases = self.biasing_phrases, kmp_bonus = self.kmp_bonus
             )
@@ -204,7 +179,7 @@ class DecodingTaskStable(DecodingTask):
     def _main_loop(self, audio_features: torch.Tensor, tokens: torch.Tensor):
         n_batch = tokens.shape[0]
         sum_logprobs: torch.Tensor = torch.zeros(n_batch, device=audio_features.device)
-        partial_matching_lengths: torch.Tensor = torch.zeros(n_batch, len(self.biasing_phrases), device=audio_features.device).long()
+        partial_matching_lengths: Optional[torch.Tensor] = torch.zeros(n_batch, len(self.biasing_phrases), device=audio_features.device).long() if self.biasing_phrases != None else None
         no_speech_probs = [np.nan] * n_batch
 
         try:
@@ -227,7 +202,7 @@ class DecodingTaskStable(DecodingTask):
 
                 logits.nan_to_num_(-np.inf)
                 # expand the tokens tensor with the selected next tokens
-                if self.options.beam_size != None:
+                if self.options.beam_size != None and self.biasing_phrases != None:
                     tokens, completed, partial_matching_lengths = self.decoder.update(tokens, logits, sum_logprobs, partial_matching_lengths)
                 else:
                     tokens, completed = self.decoder.update(tokens, logits, sum_logprobs)
@@ -247,7 +222,7 @@ def decode_stable(model: "Whisper",
                   options: DecodingOptions = DecodingOptions(),
                   ts_token_mask: torch.Tensor = None,
                   audio_features: torch.Tensor = None,
-                  biasing_phrases: Optional[List[List[int]]] = None,
+                  biasing_phrases: Optional[List[Tuple[List[int], List[int]]]] = None,
                   kmp_bonus: Optional[float] = None,
                   **kwargs, ) -> \
         Union[DecodingResult, List[DecodingResult], tuple]:

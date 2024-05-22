@@ -269,6 +269,24 @@ def transcribe_stable(
     language = None
     initial_prompt_tokens = []
     task = decode_options.get("task", "transcribe")
+    
+    def failure(
+        sequence: List[int]
+    ) -> List[int]:
+        
+        result = [-1] * len(sequence)
+        
+        k = 0
+        for i in range(1, len(sequence)):
+            if sequence[i] == sequence[k]:
+                result[i] = result[k]
+            else:
+                result[i] = k
+                while k >= 0 and sequence[i] != sequence[k]:
+                    k = result[k]
+            k += 1
+            
+        return result
 
     def detect_language():
         nonlocal tokenizer
@@ -327,7 +345,8 @@ def transcribe_stable(
                 initial_prompt_tokens = tokenizer.encode(" " + initial_prompt.strip())
                 all_tokens.extend(initial_prompt_tokens)
                 
-        biasing_phrases = [tokenizer.encode(bp) for bp in biasing_phrases] if (len(biasing_phrases) != 0 and isinstance(biasing_phrases[0], str)) else (biasing_phrases if (len(biasing_phrases) != 0 and isinstance(biasing_phrases[0], list)) else None)
+        if isinstance(biasing_phrases, list) and len(biasing_phrases) > 0 and isinstance(biasing_phrases[0], str):        
+            biasing_phrases = [((x := tokenizer.encode(bp)), failure(x)) for bp in biasing_phrases]
 
     audio_features = None
 
