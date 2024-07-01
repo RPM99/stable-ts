@@ -73,6 +73,7 @@ def transcribe_stable(
         ignore_compatibility: bool = False,
         biasing_phrases: Optional[List[str]] = None,
         kmp_bonus: float = 1.0,
+        fallback_without_prompt: bool = False,
         **decode_options) \
         -> WhisperResult:
     """
@@ -198,6 +199,8 @@ def transcribe_stable(
         List of hotwords present in the audio that should condition the transcription.
     kmp_bonus: float
         Hyperparameter that weighs the impact of the biasing phrases in the decoding process.
+    fallback_without_prompt: bool
+        If `decode_with_fallback` fails, repeat without using the context in the prompt.
     Returns
     -------
     stable_whisper.result.WhisperResult
@@ -394,7 +397,49 @@ def transcribe_stable(
                 needs_fallback = False  # silence
 
             if not needs_fallback:
+                needs_fallback = False
                 break
+            
+        if needs_fallback and fallback_without_prompt:
+            for t in temperatures:
+                kwargs = {**decode_options}
+                kwargs.pop('prompt')
+                if t > 0:
+                    # disable beam_size and patience when t > 0
+                    kwargs.pop("beam_size", None)
+                    kwargs.pop("patience", None)
+                else:
+                    # disable best_of when t == 0
+                    kwargs.pop("best_of", None)
+
+                options = DecodingOptions(**kwargs, temperature=t)
+                decode_result, audio_features = decode_stable(model,
+                                                            seg,
+                                                            options,
+                                                            ts_token_mask=ts_token_mask if suppress_ts_tokens else None,
+                                                            audio_features=audio_features,
+                                                            biasing_phrases=biasing_phrases,
+                                                            kmp_bonus=kmp_bonus)
+
+                needs_fallback = False
+                if (
+                        compression_ratio_threshold is not None
+                        and decode_result.compression_ratio > compression_ratio_threshold
+                ):
+                    needs_fallback = True  # too repetitive
+                if (
+                        logprob_threshold is not None
+                        and decode_result.avg_logprob < logprob_threshold
+                ):
+                    needs_fallback = True  # average log probability is too low
+                if (
+                    no_speech_threshold is not None
+                    and decode_result.no_speech_prob > no_speech_threshold
+                ):
+                    needs_fallback = False  # silence
+
+                if not needs_fallback:
+                    break
 
         return decode_result
 
@@ -529,6 +574,16 @@ def transcribe_stable(
                 if should_skip:
                     fast_forward()
                     continue
+            if logprob_threshold is not None and result.avg_logprob < logprob_threshold:
+                # probably there is speech, but the text is far too poor
+                # store the interval where this happened
+                failures.append({
+                    'start': time_offset,
+                    'end': time_offset + segment_samples // SAMPLE_RATE,
+                    'cause': 'Final logprob after decode with fallback was too low.'
+                })
+                fast_forward()
+                continue
 
             current_segments = []
 
@@ -671,7 +726,8 @@ def transcribe_stable(
                 # store the interval where this happened
                 failures.append({
                     'start': current_segments[0]['start'],
-                    'end': current_segments[0]['start'] + segment_samples // SAMPLE_RATE
+                    'end': current_segments[0]['start'] + segment_samples // SAMPLE_RATE,
+                    'cause': 'Fallback-1 failed.'
                 })
                 word_timestamps_fallback = False
                 fast_forward()
