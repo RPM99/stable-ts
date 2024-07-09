@@ -69,6 +69,9 @@ def transcribe_stable(
         avg_prob_threshold: Optional[float] = None,
         progress_callback: Callable = None,
         ignore_compatibility: bool = False,
+        biasing_phrases: Optional[List[str]] = None,
+        kmp_bonus: float = 1.0,
+        fallback_without_prompt: bool = False,
         extra_models: Optional[List["Whisper"]] = None,
         **decode_options) \
         -> WhisperResult:
@@ -186,6 +189,12 @@ def transcribe_stable(
         The second parameter is a float for total duration of audio in seconds.
     ignore_compatibility : bool, default False
         Whether to ignore warnings for compatibility issues with the detected Whisper version.
+    biasing_phrases: List[str]
+        List of hotwords present in the audio that should condition the transcription.
+    kmp_bonus: float
+        Hyperparameter that weighs the impact of the biasing phrases in the decoding process.
+    fallback_without_prompt: bool
+        If `decode_with_fallback` fails, repeat without using the context in the prompt.
     extra_models : list of whisper.model.Whisper, optional
         List of additional Whisper model instances to use for computing word-timestamps along with ``model``.
     decode_options
@@ -284,9 +293,28 @@ def transcribe_stable(
     task = decode_options.get("task", "transcribe")
     if word_timestamps and task == "translate":
         warnings.warn("Word-level timestamps on translations may not be reliable.")
+        
+    def failure(
+        sequence: List[int]
+    ) -> List[int]:
+        
+        result = [-1] * len(sequence)
+        
+        k = 0
+        for i in range(1, len(sequence)):
+            if sequence[i] == sequence[k]:
+                result[i] = result[k]
+            else:
+                result[i] = k
+                while k >= 0 and sequence[i] != sequence[k]:
+                    k = result[k]
+            k += 1
+            
+        return result
 
     def detect_language():
         nonlocal tokenizer
+        nonlocal biasing_phrases
         if tokenizer is None:
             if not decode_options.get("language"):
                 if not model.is_multilingual:
@@ -312,6 +340,9 @@ def transcribe_stable(
                 nonlocal initial_prompt_tokens
                 initial_prompt_tokens = tokenizer.encode(" " + initial_prompt.strip())
                 all_tokens.extend(initial_prompt_tokens)
+                
+        if isinstance(biasing_phrases, list) and len(biasing_phrases) > 0 and isinstance(biasing_phrases[0], str):        
+            biasing_phrases = [((x := tokenizer.encode(bp)), failure(x)) for bp in biasing_phrases]
 
     audio_features = None
 
@@ -337,7 +368,9 @@ def transcribe_stable(
                                                           seg,
                                                           options,
                                                           ts_token_mask=ts_token_mask if suppress_ts_tokens else None,
-                                                          audio_features=audio_features)
+                                                          audio_features=audio_features,
+                                                          biasing_phrases=biasing_phrases,
+                                                          kmp_bonus=kmp_bonus)
 
             needs_fallback = False
             if (
@@ -358,6 +391,47 @@ def transcribe_stable(
 
             if not needs_fallback:
                 break
+            
+        if needs_fallback and fallback_without_prompt:
+            for t in temperatures:
+                kwargs = {**decode_options}
+                kwargs.pop('prompt')
+                if t > 0:
+                    # disable beam_size and patience when t > 0
+                    kwargs.pop("beam_size", None)
+                    kwargs.pop("patience", None)
+                else:
+                    # disable best_of when t == 0
+                    kwargs.pop("best_of", None)
+
+                options = DecodingOptions(**kwargs, temperature=t)
+                decode_result, audio_features = decode_stable(model,
+                                                            seg,
+                                                            options,
+                                                            ts_token_mask=ts_token_mask if suppress_ts_tokens else None,
+                                                            audio_features=audio_features,
+                                                            biasing_phrases=biasing_phrases,
+                                                            kmp_bonus=kmp_bonus)
+
+                needs_fallback = False
+                if (
+                        compression_ratio_threshold is not None
+                        and decode_result.compression_ratio > compression_ratio_threshold
+                ):
+                    needs_fallback = True  # too repetitive
+                if (
+                        logprob_threshold is not None
+                        and decode_result.avg_logprob < logprob_threshold
+                ):
+                    needs_fallback = True  # average log probability is too low
+                if (
+                    no_speech_threshold is not None
+                    and decode_result.no_speech_prob > no_speech_threshold
+                ):
+                    needs_fallback = False  # silence
+
+                if not needs_fallback:
+                    break
 
         return decode_result
 
@@ -409,6 +483,9 @@ def transcribe_stable(
         min_silence_dur=min_silence_dur
     )
     audio.update_post_prep_callback(nonspeech_predictor.get_on_prep_callback(audio.stream))
+    
+    # container to store segments of no silence where Whisper hallucinated
+    failures = []
 
     with tqdm(total=initial_duration, unit='sec', disable=verbose is not False, desc=task.title()) as tqdm_pbar:
 
@@ -434,6 +511,8 @@ def transcribe_stable(
             update_seek()
             update_pbar()
 
+        # fallback flag for when segments are discarded due to high percentage of instantaneous words
+        word_timestamps_fallback = False
         while True:
             audio_segment = audio.next_chunk(seek_sample, N_SAMPLES)
             if audio_segment is None:
@@ -457,7 +536,20 @@ def transcribe_stable(
 
             detect_language()
             decode_options["prompt"] = all_tokens[prompt_reset_since:]
-            result: DecodingResult = decode_with_fallback(mel_segment, ts_token_mask=ts_token_mask)
+            try:
+                # this try-except serves to catch some torch/cuda exceptions from the OpenAI's Whisper library
+                # which still remains clouded by some mystery
+                result: DecodingResult = decode_with_fallback(mel_segment, ts_token_mask=ts_token_mask)
+            except Exception as e:
+                # print the error, reset the fallback flag, add this segment as failure and skip segment
+                print(e)
+                word_timestamps_fallback = False
+                failures.append({
+                    'start': time_offset,
+                    'end': time_offset + segment_duration
+                })
+                fast_forward()
+                continue
             tokens = torch.tensor(result.tokens)
 
             if no_speech_threshold is not None:
@@ -470,6 +562,16 @@ def transcribe_stable(
                 if should_skip:
                     fast_forward()
                     continue
+            if logprob_threshold is not None and result.avg_logprob < logprob_threshold:
+                # probably there is speech, but the text is far too poor
+                # store the interval where this happened
+                failures.append({
+                    'start': time_offset,
+                    'end': time_offset + segment_samples // SAMPLE_RATE,
+                    'cause': 'Final logprob after decode with fallback was too low.'
+                })
+                fast_forward()
+                continue
 
             current_segments = []
 
@@ -509,6 +611,7 @@ def transcribe_stable(
                 if (
                         len(timestamps) > 0
                         and timestamps[-1].item() != tokenizer.timestamp_begin
+                        and not word_timestamps_fallback
                 ):
                     # no consecutive timestamps but it has a timestamp; use the last one.
                     end_timestamp_pos = (
@@ -558,6 +661,8 @@ def transcribe_stable(
                 segment_samples
             )
 
+            # flag for whether segments with high percentage of instantaneous words were removed
+            zero_duration_percent_led_to_remove = False
             if word_timestamps:
                 add_word_timestamps_stable(
                     segments=current_segments,
@@ -584,7 +689,10 @@ def transcribe_stable(
                         .mean()
                     )
                     if zero_duration_percent > max_instant_words:
-                        del current_segments[i]
+                        zero_duration_percent_led_to_remove = True
+                        if not word_timestamps_fallback:
+                            # delete segments only if not already in fallback
+                            del current_segments[i]
 
                 if avg_prob_threshold and current_segments:
                     if (
@@ -598,6 +706,12 @@ def transcribe_stable(
                         num_samples = round((current_segments[-1]['words'][-1]['end']-time_offset) * SAMPLE_RATE)
 
             if len(current_segments) == 0:
+                # case too many words were instantaneous on some segment
+                if zero_duration_percent_led_to_remove:
+                    # first option for fallback
+                    if not word_timestamps_fallback:
+                        word_timestamps_fallback = True
+                        segment_samples = 0   
                 fast_forward()
                 continue
 
@@ -613,6 +727,26 @@ def transcribe_stable(
                     if verbose:
                         safe_print(segment.to_display_str())
                     current_segments[seg_i] = segment.to_dict()
+                    
+            if zero_duration_percent_led_to_remove and word_timestamps_fallback:
+                # case already on fallback but still failed
+                # give up on this segment, because it is surely corrupted with hallucinations
+                # and will corrupt the following segments
+                # store the interval where this happened
+                failures.append({
+                    'start': current_segments[0]['start'],
+                    'end': current_segments[0]['start'] + segment_samples // SAMPLE_RATE,
+                    'cause': 'Fallback-1 failed.'
+                })
+                word_timestamps_fallback = False
+                fast_forward()
+                continue
+            elif word_timestamps_fallback:
+                # case first option of fallback worked
+                for segment_idx in range(len(current_segments)):
+                    for word_idx in range(len(current_segments[segment_idx]['words'])):
+                        current_segments[segment_idx]['words'][word_idx].update([('debug', 'Fallback-1')])
+            word_timestamps_fallback = False 
 
             all_segments.extend(
                 [
@@ -649,7 +783,8 @@ def transcribe_stable(
             language=language,
             time_scale=time_scale
         ),
-        force_order=not word_timestamps
+        force_order=not word_timestamps,
+        failures=failures
     )
     if word_timestamps and regroup:
         final_result.regroup(regroup)
