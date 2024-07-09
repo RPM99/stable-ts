@@ -59,7 +59,8 @@ class WordTiming:
             id: Optional[int] = None,
             segment: Optional['Segment'] = None,
             round_ts: bool = True,
-            ignore_unused_args: bool = False
+            ignore_unused_args: bool = False,
+            debug: Optional[str] = None
     ):
         if not ignore_unused_args and segment_id is not None:
             warnings.warn('The parameter ``segment_id`` is ignored. '
@@ -75,6 +76,7 @@ class WordTiming:
         self.right_locked = right_locked
         self.segment = segment
         self.id = id
+        self.debug = debug
 
     def __repr__(self):
         return f'WordTiming(start={self.start}, end={self.end}, word="{self.word}")'
@@ -833,9 +835,11 @@ class WhisperResult:
             result: Union[str, dict, list],
             force_order: bool = False,
             check_sorted: Union[bool, str] = True,
-            show_unsorted: bool = True
+            show_unsorted: bool = True,
+            failures: Optional[list] = None
     ):
         result, self.path = self._standardize_result(result)
+        self.failures = failures
         self.ori_dict = result.get('ori_dict') or result
         self.language = self.ori_dict.get('language')
         self._regroup_history = result.get('regroup_history', '')
@@ -1282,7 +1286,8 @@ class WhisperResult:
                     language=self.language,
                     ori_dict=ori_dict,
                     regroup_history=self._regroup_history,
-                    nonspeech_sections=self._nonspeech_sections)
+                    nonspeech_sections=self._nonspeech_sections,
+                    failures=self.failures)
 
     def segments_to_dicts(self, reverse_text: Union[bool, tuple] = False):
         return [s.to_dict(reverse_text=reverse_text) for s in self.segments]
