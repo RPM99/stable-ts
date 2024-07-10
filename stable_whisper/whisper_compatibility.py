@@ -47,7 +47,7 @@ if IS_WHISPER_AVAILABLE:
 
     from whisper.tokenizer import Tokenizer
     from whisper.model import Whisper
-    from whisper.decoding import DecodingTask, DecodingOptions, DecodingResult, SuppressTokens
+    from whisper.decoding import DecodingTask, DecodingOptions, DecodingResult, SuppressTokens, BeamSearchDecoder
 else:
     import torch
     import numpy as np
